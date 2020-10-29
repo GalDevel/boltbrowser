@@ -33,6 +33,7 @@ type BrowserScreen struct {
 	currentType    int
 	message        string
 	filter         string
+	bucketFilter   string
 	mode           BrowserMode
 	inputModal     *termboxUtil.InputModal
 	confirmModal   *termboxUtil.ConfirmModal
@@ -54,6 +55,7 @@ const (
 	modeChangeKey     = 33  // 0000 0010 0001
 	modeChangeVal     = 34  // 0000 0010 0010
 	modeFilter        = 35  // 0100 0010 0011
+	modeBucketFilter  = 36  // 0100 0010 0100
 	modeInsert        = 64  // 0000 0100 0000
 	modeInsertBucket  = 65  // 0000 0100 0001
 	modeInsertPair    = 68  // 0000 0100 0100
@@ -105,20 +107,14 @@ func (screen *BrowserScreen) handleBrowseKeyEvent(event termbox.Event) int {
 
 	} else if event.Ch == 'g' {
 		// Jump to Beginning
-		screen.currentPath = screen.db.getNextVisiblePath(nil, screen.filter)
+		screen.currentPath = screen.db.getNextVisiblePath(nil, screen.filter, screen.bucketFilter)
 
 	} else if event.Ch == 'G' {
 		// Jump to End
-		screen.currentPath = screen.db.getPrevVisiblePath(nil, screen.filter)
+		screen.currentPath = screen.db.getPrevVisiblePath(nil, screen.filter, screen.bucketFilter)
 
 	} else if event.Key == termbox.KeyCtrlR {
 		screen.refreshDatabase()
-
-	} else if event.Key == termbox.KeyCtrlF {
-		// Jump forward half a screen
-		_, h := termbox.Size()
-		half := h / 2
-		screen.jumpCursorDown(half)
 
 	} else if event.Key == termbox.KeyCtrlB {
 		_, h := termbox.Size()
@@ -160,6 +156,9 @@ func (screen *BrowserScreen) handleBrowseKeyEvent(event termbox.Event) int {
 		}
 	} else if event.Ch == '/' {
 		screen.startFilter()
+
+	} else if event.Key == termbox.KeyCtrlF {
+		screen.startBucketFilter()
 
 	} else if event.Ch == 'r' {
 		screen.startRenameItem()
@@ -223,7 +222,13 @@ func (screen *BrowserScreen) handleInputKeyEvent(event termbox.Event) int {
 			b, p, _ := screen.db.getGenericFromPath(screen.currentPath)
 			if screen.mode == modeFilter {
 				screen.filter = screen.inputModal.GetValue()
-				if !screen.db.isVisiblePath(screen.currentPath, screen.filter) {
+				if !screen.db.isVisiblePath(screen.currentPath, screen.filter, screen.bucketFilter) {
+					screen.currentPath = screen.currentPath[:len(screen.currentPath)-1]
+				}
+			}
+			if screen.mode == modeBucketFilter {
+				screen.bucketFilter = screen.inputModal.GetValue()
+				if !screen.db.isVisiblePath(screen.currentPath, screen.filter, screen.bucketFilter) {
 					screen.currentPath = screen.currentPath[:len(screen.currentPath)-1]
 				}
 			}
@@ -272,8 +277,8 @@ func (screen *BrowserScreen) handleDeleteKeyEvent(event termbox.Event) int {
 	screen.confirmModal.HandleEvent(event)
 	if screen.confirmModal.IsDone() {
 		if screen.confirmModal.IsAccepted() {
-			holdNextPath := screen.db.getNextVisiblePath(screen.currentPath, screen.filter)
-			holdPrevPath := screen.db.getPrevVisiblePath(screen.currentPath, screen.filter)
+			holdNextPath := screen.db.getNextVisiblePath(screen.currentPath, screen.filter, screen.bucketFilter)
+			holdPrevPath := screen.db.getPrevVisiblePath(screen.currentPath, screen.filter, screen.bucketFilter)
 			if deleteKey(screen.currentPath) == nil {
 				screen.refreshDatabase()
 				// Move the current path endpoint appropriately
@@ -411,7 +416,7 @@ func (screen *BrowserScreen) handleExportKeyEvent(event termbox.Event) int {
 
 func (screen *BrowserScreen) jumpCursorUp(distance int) bool {
 	// Jump up 'distance' lines
-	visPaths, err := screen.db.buildVisiblePathSlice(screen.filter)
+	visPaths, err := screen.db.buildVisiblePathSlice(screen.filter, screen.bucketFilter)
 	if err == nil {
 		findPath := screen.currentPath
 		for idx, pth := range visPaths {
@@ -437,13 +442,13 @@ func (screen *BrowserScreen) jumpCursorUp(distance int) bool {
 			}
 		}
 		if isCurPath {
-			screen.currentPath = screen.db.getNextVisiblePath(nil, screen.filter)
+			screen.currentPath = screen.db.getNextVisiblePath(nil, screen.filter, screen.bucketFilter)
 		}
 	}
 	return true
 }
 func (screen *BrowserScreen) jumpCursorDown(distance int) bool {
-	visPaths, err := screen.db.buildVisiblePathSlice(screen.filter)
+	visPaths, err := screen.db.buildVisiblePathSlice(screen.filter, screen.bucketFilter)
 	if err == nil {
 		findPath := screen.currentPath
 		for idx, pth := range visPaths {
@@ -470,14 +475,14 @@ func (screen *BrowserScreen) jumpCursorDown(distance int) bool {
 			}
 		}
 		if isCurPath {
-			screen.currentPath = screen.db.getNextVisiblePath(nil, screen.filter)
+			screen.currentPath = screen.db.getNextVisiblePath(nil, screen.filter, screen.bucketFilter)
 		}
 	}
 	return true
 }
 
 func (screen *BrowserScreen) moveCursorUp() bool {
-	newPath := screen.db.getPrevVisiblePath(screen.currentPath, screen.filter)
+	newPath := screen.db.getPrevVisiblePath(screen.currentPath, screen.filter, screen.bucketFilter)
 	if newPath != nil {
 		screen.currentPath = newPath
 		return true
@@ -485,7 +490,7 @@ func (screen *BrowserScreen) moveCursorUp() bool {
 	return false
 }
 func (screen *BrowserScreen) moveCursorDown() bool {
-	newPath := screen.db.getNextVisiblePath(screen.currentPath, screen.filter)
+	newPath := screen.db.getNextVisiblePath(screen.currentPath, screen.filter, screen.bucketFilter)
 	if newPath != nil {
 		screen.currentPath = newPath
 		return true
@@ -562,7 +567,7 @@ func (screen *BrowserScreen) drawFooter(style Style) {
 func (screen *BrowserScreen) buildLeftPane(style Style) {
 	screen.leftPaneBuffer = nil
 	if len(screen.currentPath) == 0 {
-		screen.currentPath = screen.db.getNextVisiblePath(nil, screen.filter)
+		screen.currentPath = screen.db.getNextVisiblePath(nil, screen.filter, screen.bucketFilter)
 	}
 	for i := range screen.db.buckets {
 		screen.leftPaneBuffer = append(screen.leftPaneBuffer, screen.bucketToLines(&screen.db.buckets[i], style)...)
@@ -699,6 +704,10 @@ func (screen *BrowserScreen) bucketToLines(bkt *BoltBucket, style Style) []Line 
 	if bkt.expanded {
 		ret = append(ret, Line{bktPrefix + "- " + stringify([]byte(bkt.name)), bfg, bbg})
 		for i := range bkt.buckets {
+			if screen.bucketFilter != "" && !strings.Contains(bkt.buckets[i].name, screen.bucketFilter) {
+				continue
+			}
+
 			ret = append(ret, screen.bucketToLines(&bkt.buckets[i], style)...)
 		}
 		for _, bp := range bkt.pairs {
@@ -757,6 +766,23 @@ func (screen *BrowserScreen) startFilter() bool {
 		mod.Show()
 		screen.inputModal = mod
 		screen.mode = modeFilter
+		return true
+	}
+	return false
+}
+
+func (screen *BrowserScreen) startBucketFilter() bool {
+	_, _, e := screen.db.getGenericFromPath(screen.currentPath)
+	if e == nil {
+		w, h := termbox.Size()
+		inpW, inpH := (w / 2), 6
+		inpX, inpY := ((w / 2) - (inpW / 2)), ((h / 2) - inpH)
+		mod := termboxUtil.CreateInputModal("", inpX, inpY, inpW, inpH, termbox.ColorWhite, termbox.ColorBlack)
+		mod.SetTitle(termboxUtil.AlignText("Bucket Filter", inpW, termboxUtil.AlignCenter))
+		mod.SetValue(screen.bucketFilter)
+		mod.Show()
+		screen.inputModal = mod
+		screen.mode = modeBucketFilter
 		return true
 	}
 	return false
